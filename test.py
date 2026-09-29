@@ -2,15 +2,17 @@
 # 1. IMPORTS
 # ============================================================
 
-import os
 import time
 import random
 import numpy as np
+
 import torch
 import torch.nn as nn
 
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.datasets import load_iris
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 
 # ============================================================
@@ -19,15 +21,11 @@ from torchvision import datasets, transforms
 
 SEED = 42
 
-BATCH_SIZE = 128
-EPOCHS = 10
-LEARNING_RATE = 1e-3
-NUM_WORKERS = 2
+BATCH_SIZE = 16
+EPOCHS = 50
+LEARNING_RATE = 0.001
 
-IMAGE_SIZE = 32
-NUM_CLASSES = 10
-
-MODEL_PATH = "best_model.pth"
+MODEL_PATH = "iris_model.pth"
 
 
 # ============================================================
@@ -51,429 +49,327 @@ device = torch.device(
 )
 
 print("=" * 60)
-print("SYSTEM INFORMATION")
+print("SYSTEM")
 print("=" * 60)
 
-print(f"PyTorch Version : {torch.__version__}")
-print(f"CUDA Available  : {torch.cuda.is_available()}")
-print(f"Device          : {device}")
+print("PyTorch:", torch.__version__)
+print("CUDA Available:", torch.cuda.is_available())
+print("Device:", device)
 
 if torch.cuda.is_available():
-    print(f"GPU             : {torch.cuda.get_device_name(0)}")
-    print(
-        f"GPU Memory      : "
-        f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB"
-    )
+    print("GPU:", torch.cuda.get_device_name(0))
 
 print("=" * 60)
 
 
 # ============================================================
-# 5. DATA TRANSFORMS
+# 5. LOAD IRIS DATASET
 # ============================================================
 
-train_transform = transforms.Compose([
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomCrop(32, padding=4),
-    transforms.ToTensor(),
+print("\nLoading Iris dataset...")
 
-    transforms.Normalize(
-        mean=(0.4914, 0.4822, 0.4465),
-        std=(0.2470, 0.2435, 0.2616)
-    )
-])
+iris = load_iris()
 
+X = iris.data
+y = iris.target
 
-val_transform = transforms.Compose([
-    transforms.ToTensor(),
-
-    transforms.Normalize(
-        mean=(0.4914, 0.4822, 0.4465),
-        std=(0.2470, 0.2435, 0.2616)
-    )
-])
+print("Samples:", X.shape[0])
+print("Features:", X.shape[1])
+print("Classes:", len(np.unique(y)))
 
 
 # ============================================================
-# 6. DATASET
+# 6. TRAIN / VALIDATION SPLIT
 # ============================================================
 
-print("\n" + "=" * 60)
-print("LOADING DATASET")
-print("=" * 60)
-
-train_dataset = datasets.CIFAR10(
-    root="./data",
-    train=True,
-    download=True,
-    transform=train_transform
+X_train, X_val, y_train, y_val = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=SEED,
+    stratify=y
 )
 
-val_dataset = datasets.CIFAR10(
-    root="./data",
-    train=False,
-    download=True,
-    transform=val_transform
-)
 
-print(f"Training samples   : {len(train_dataset)}")
-print(f"Validation samples : {len(val_dataset)}")
+# ============================================================
+# 7. FEATURE SCALING
+# ============================================================
+
+scaler = StandardScaler()
+
+X_train = scaler.fit_transform(X_train)
+X_val = scaler.transform(X_val)
 
 
 # ============================================================
-# 7. DATALOADERS
+# 8. CONVERT TO PYTORCH TENSORS
+# ============================================================
+
+X_train = torch.tensor(
+    X_train,
+    dtype=torch.float32
+)
+
+y_train = torch.tensor(
+    y_train,
+    dtype=torch.long
+)
+
+X_val = torch.tensor(
+    X_val,
+    dtype=torch.float32
+)
+
+y_val = torch.tensor(
+    y_val,
+    dtype=torch.long
+)
+
+
+# ============================================================
+# 9. DATASETS
+# ============================================================
+
+train_dataset = TensorDataset(
+    X_train,
+    y_train
+)
+
+val_dataset = TensorDataset(
+    X_val,
+    y_val
+)
+
+
+# ============================================================
+# 10. DATALOADERS
 # ============================================================
 
 train_loader = DataLoader(
     train_dataset,
     batch_size=BATCH_SIZE,
-    shuffle=True,
-    num_workers=NUM_WORKERS,
-    pin_memory=torch.cuda.is_available()
+    shuffle=True
 )
 
 val_loader = DataLoader(
     val_dataset,
     batch_size=BATCH_SIZE,
-    shuffle=False,
-    num_workers=NUM_WORKERS,
-    pin_memory=torch.cuda.is_available()
+    shuffle=False
 )
 
 
 # ============================================================
-# 8. MODEL
+# 11. MODEL
 # ============================================================
 
-class CNN(nn.Module):
+class IrisModel(nn.Module):
 
-    def __init__(self, num_classes=10):
+    def __init__(self):
         super().__init__()
 
-        self.features = nn.Sequential(
+        self.network = nn.Sequential(
 
-            # Block 1
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-
-            # Block 2
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-
-            # Block 3
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-        )
-
-        self.classifier = nn.Sequential(
-
-            nn.Flatten(),
-
-            nn.Linear(128 * 4 * 4, 256),
-
-            nn.BatchNorm1d(256),
+            nn.Linear(4, 32),
             nn.ReLU(),
 
-            nn.Dropout(0.4),
+            nn.Linear(32, 16),
+            nn.ReLU(),
 
-            nn.Linear(256, num_classes)
+            nn.Linear(16, 3)
         )
 
     def forward(self, x):
 
-        x = self.features(x)
-
-        x = self.classifier(x)
-
-        return x
+        return self.network(x)
 
 
-model = CNN(NUM_CLASSES).to(device)
+model = IrisModel().to(device)
 
-print("\n" + "=" * 60)
-print("MODEL")
+print("\nMODEL")
 print("=" * 60)
 
 print(model)
 
 
 # ============================================================
-# 9. LOSS
+# 12. LOSS
 # ============================================================
 
 criterion = nn.CrossEntropyLoss()
 
 
 # ============================================================
-# 10. OPTIMIZER
+# 13. OPTIMIZER
 # ============================================================
 
 optimizer = torch.optim.AdamW(
     model.parameters(),
-    lr=LEARNING_RATE,
-    weight_decay=1e-4
+    lr=LEARNING_RATE
 )
 
 
 # ============================================================
-# 11. LEARNING RATE SCHEDULER
+# 14. TRAIN FUNCTION
 # ============================================================
 
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer,
-    T_max=EPOCHS
-)
-
-
-# ============================================================
-# 12. TRAIN FUNCTION
-# ============================================================
-
-def train_one_epoch(model, loader, criterion, optimizer):
+def train_one_epoch():
 
     model.train()
 
-    running_loss = 0.0
+    total_loss = 0
     correct = 0
     total = 0
 
-    for images, labels in loader:
+    for X_batch, y_batch in train_loader:
 
-        images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
+        X_batch = X_batch.to(device)
+        y_batch = y_batch.to(device)
 
-        # Clear gradients
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad()
 
-        # Forward
-        outputs = model(images)
+        outputs = model(X_batch)
 
-        # Loss
-        loss = criterion(outputs, labels)
+        loss = criterion(
+            outputs,
+            y_batch
+        )
 
-        # Backward
         loss.backward()
 
-        # Update weights
         optimizer.step()
 
-        # Statistics
-        running_loss += loss.item() * images.size(0)
+        total_loss += loss.item()
 
         predictions = outputs.argmax(dim=1)
 
-        correct += (predictions == labels).sum().item()
+        correct += (
+            predictions == y_batch
+        ).sum().item()
 
-        total += labels.size(0)
+        total += y_batch.size(0)
 
-    epoch_loss = running_loss / total
-    epoch_accuracy = correct / total
+    accuracy = correct / total
 
-    return epoch_loss, epoch_accuracy
+    return total_loss / len(train_loader), accuracy
 
 
 # ============================================================
-# 13. VALIDATION FUNCTION
+# 15. VALIDATION FUNCTION
 # ============================================================
 
 @torch.no_grad()
-def validate(model, loader, criterion):
+def validate():
 
     model.eval()
 
-    running_loss = 0.0
+    total_loss = 0
     correct = 0
     total = 0
 
-    for images, labels in loader:
+    for X_batch, y_batch in val_loader:
 
-        images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
+        X_batch = X_batch.to(device)
+        y_batch = y_batch.to(device)
 
-        outputs = model(images)
+        outputs = model(X_batch)
 
-        loss = criterion(outputs, labels)
+        loss = criterion(
+            outputs,
+            y_batch
+        )
 
-        running_loss += loss.item() * images.size(0)
+        total_loss += loss.item()
 
         predictions = outputs.argmax(dim=1)
 
-        correct += (predictions == labels).sum().item()
+        correct += (
+            predictions == y_batch
+        ).sum().item()
 
-        total += labels.size(0)
+        total += y_batch.size(0)
 
-    epoch_loss = running_loss / total
-    epoch_accuracy = correct / total
+    accuracy = correct / total
 
-    return epoch_loss, epoch_accuracy
+    return total_loss / len(val_loader), accuracy
 
 
 # ============================================================
-# 14. TRAINING LOOP
+# 16. TRAINING
 # ============================================================
 
-print("\n" + "=" * 60)
+print("\n")
+print("=" * 60)
 print("START TRAINING")
 print("=" * 60)
 
-best_val_accuracy = 0.0
+best_accuracy = 0
 
-history = {
-    "train_loss": [],
-    "train_accuracy": [],
-    "val_loss": [],
-    "val_accuracy": []
-}
+start_time = time.time()
 
 
 for epoch in range(EPOCHS):
 
-    start_time = time.time()
+    train_loss, train_acc = train_one_epoch()
 
-    # --------------------------------------------------------
-    # Training
-    # --------------------------------------------------------
-
-    train_loss, train_accuracy = train_one_epoch(
-        model,
-        train_loader,
-        criterion,
-        optimizer
-    )
-
-    # --------------------------------------------------------
-    # Validation
-    # --------------------------------------------------------
-
-    val_loss, val_accuracy = validate(
-        model,
-        val_loader,
-        criterion
-    )
-
-    # --------------------------------------------------------
-    # Scheduler
-    # --------------------------------------------------------
-
-    scheduler.step()
-
-    # --------------------------------------------------------
-    # Save history
-    # --------------------------------------------------------
-
-    history["train_loss"].append(train_loss)
-    history["train_accuracy"].append(train_accuracy)
-
-    history["val_loss"].append(val_loss)
-    history["val_accuracy"].append(val_accuracy)
-
-    # --------------------------------------------------------
-    # Time
-    # --------------------------------------------------------
-
-    epoch_time = time.time() - start_time
-
-    # --------------------------------------------------------
-    # Print results
-    # --------------------------------------------------------
+    val_loss, val_acc = validate()
 
     print(
-        f"\nEpoch [{epoch + 1:02d}/{EPOCHS}] "
-        f"| Time: {epoch_time:.1f}s"
-    )
-
-    print(
+        f"Epoch [{epoch + 1:02d}/{EPOCHS}] "
+        f"| "
         f"Train Loss: {train_loss:.4f} "
-        f"| Train Acc: {train_accuracy * 100:.2f}%"
-    )
-
-    print(
-        f"Val Loss:   {val_loss:.4f} "
-        f"| Val Acc:   {val_accuracy * 100:.2f}%"
-    )
-
-    print(
-        f"LR: {optimizer.param_groups[0]['lr']:.6f}"
+        f"| Train Acc: {train_acc * 100:.2f}% "
+        f"| "
+        f"Val Loss: {val_loss:.4f} "
+        f"| Val Acc: {val_acc * 100:.2f}%"
     )
 
     # --------------------------------------------------------
-    # Best Model Checkpoint
+    # Save Best Model
     # --------------------------------------------------------
 
-    if val_accuracy > best_val_accuracy:
+    if val_acc > best_accuracy:
 
-        best_val_accuracy = val_accuracy
+        best_accuracy = val_acc
 
         torch.save(
             {
-                "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_accuracy": val_accuracy,
-                "val_loss": val_loss,
+                "accuracy": val_acc,
+                "scaler_mean": scaler.mean_,
+                "scaler_scale": scaler.scale_
             },
             MODEL_PATH
         )
 
         print(
-            f"✓ Best model saved "
-            f"(Val Acc: {val_accuracy * 100:.2f}%)"
+            f"   ✓ Best model saved "
+            f"({val_acc * 100:.2f}%)"
         )
 
 
 # ============================================================
-# 15. FINAL RESULTS
+# 17. FINAL RESULTS
 # ============================================================
 
-print("\n" + "=" * 60)
+training_time = time.time() - start_time
+
+print("\n")
+print("=" * 60)
 print("TRAINING FINISHED")
 print("=" * 60)
 
 print(
     f"Best Validation Accuracy: "
-    f"{best_val_accuracy * 100:.2f}%"
+    f"{best_accuracy * 100:.2f}%"
 )
 
-print(f"Model saved to: {MODEL_PATH}")
-
-
-# ============================================================
-# 16. LOAD BEST MODEL
-# ============================================================
-
-checkpoint = torch.load(
-    MODEL_PATH,
-    map_location=device
+print(
+    f"Training Time: "
+    f"{training_time:.2f} seconds"
 )
 
-model.load_state_dict(
-    checkpoint["model_state_dict"]
+print(
+    f"Model: {MODEL_PATH}"
 )
-
-print("\nBest model loaded successfully.")
-
-
-# ============================================================
-# 17. FINAL VALIDATION
-# ============================================================
-
-final_loss, final_accuracy = validate(
-    model,
-    val_loader,
-    criterion
-)
-
-print("\n" + "=" * 60)
-print("FINAL EVALUATION")
-print("=" * 60)
-
-print(f"Loss     : {final_loss:.4f}")
-print(f"Accuracy : {final_accuracy * 100:.2f}%")
 
 print("=" * 60)
